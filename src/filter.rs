@@ -433,7 +433,7 @@ pub fn register_lfs_filter_with_cache(
         git2::filter_priority::DRIVER,
         filter,
     )
-    .map_err(|e| crate::Error::Http(format!("failed to register filter: {}", e)))?;
+    .map_err(|e| crate::Error::Git(format!("failed to register filter: {}", e)))?;
 
     Ok(LfsFilterRegistration { _inner: registration })
 }
