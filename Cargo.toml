@@ -1,0 +1,42 @@
+[package]
+name = "git2-lfs"
+version = "0.1.0"
+edition = "2021"
+authors = ["ejc3"]
+license = "MIT OR Apache-2.0"
+description = "Pure Rust Git LFS (Large File Storage) implementation"
+repository = "https://github.com/ejc3/git2-lfs"
+keywords = ["git", "lfs", "git-lfs", "large-file-storage"]
+categories = ["development-tools"]
+
+[dependencies]
+# Hashing
+sha2 = "0.10"
+hex = "0.4"
+
+# HTTP client
+ureq = { version = "2.10", features = ["json"] }
+
+# JSON serialization
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+
+# URL handling
+url = "2.5"
+
+# Base64 for auth
+base64 = "0.22"
+
+# Error handling
+thiserror = "1.0"
+
+# Optional git2 integration
+git2 = { path = "../git2-rs", optional = true }
+
+[dev-dependencies]
+tempfile = "3.1"
+
+[features]
+default = []
+# Enable git2 filter integration
+git2-integration = ["git2"]
