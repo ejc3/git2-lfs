@@ -47,6 +47,11 @@ pub enum Error {
     /// URL parsing error
     #[error("URL parse error: {0}")]
     UrlParse(#[from] url::ParseError),
+
+    /// Git operation error
+    #[cfg(feature = "git2-integration")]
+    #[error("Git error: {0}")]
+    Git(String),
 }
 
 impl From<ureq::Error> for Error {

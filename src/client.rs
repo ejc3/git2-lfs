@@ -68,6 +68,91 @@ impl LfsClient {
         }
     }
 
+    /// Create an LFS client by reading configuration from a git repository.
+    ///
+    /// This reads LFS settings from the repository's configuration, checking
+    /// (in order of precedence):
+    /// 1. `.git/config` - `lfs.url` (highest priority, local override)
+    /// 2. `.lfsconfig` - `lfs.url` (repo-level LFS config)
+    /// 3. `remote.<name>.lfsurl` - per-remote LFS URL
+    /// 4. Remote URL - derived by appending `/info/lfs`
+    ///
+    /// The remote is selected by:
+    /// 1. `remote.lfsdefault` config if set
+    /// 2. The only remote if there's exactly one
+    /// 3. "origin" as fallback
+    #[cfg(feature = "git2-integration")]
+    pub fn from_repo(repo: &git2::Repository) -> Result<Self> {
+        let config = repo.config().map_err(|e| Error::Git(e.to_string()))?;
+
+        // Check for explicit lfs.url in git config first (highest priority)
+        if let Ok(url) = config.get_string("lfs.url") {
+            return Self::from_lfs_url(&url);
+        }
+
+        // Check .lfsconfig file in repo root
+        if let Some(workdir) = repo.workdir() {
+            let lfsconfig_path = workdir.join(".lfsconfig");
+            if lfsconfig_path.exists() {
+                if let Ok(lfsconfig) = git2::Config::open(&lfsconfig_path) {
+                    if let Ok(url) = lfsconfig.get_string("lfs.url") {
+                        return Self::from_lfs_url(&url);
+                    }
+                }
+            }
+        }
+
+        // Determine which remote to use
+        let remote_name = config
+            .get_string("remote.lfsdefault")
+            .ok()
+            .or_else(|| {
+                // If exactly one remote, use it
+                let remotes = repo.remotes().ok()?;
+                if remotes.len() == 1 {
+                    remotes.get(0).map(|s| s.to_string())
+                } else {
+                    None
+                }
+            })
+            .unwrap_or_else(|| "origin".to_string());
+
+        // Check for remote-specific lfsurl
+        let remote_lfsurl_key = format!("remote.{}.lfsurl", remote_name);
+        if let Ok(url) = config.get_string(&remote_lfsurl_key) {
+            return Self::from_lfs_url(&url);
+        }
+
+        // Fall back to deriving from remote URL
+        let remote = repo
+            .find_remote(&remote_name)
+            .map_err(|e| Error::Git(e.to_string()))?;
+        let remote_url = remote
+            .url()
+            .ok_or_else(|| Error::Git("remote has no URL".into()))?;
+
+        LfsClient::new(remote_url)
+    }
+
+    /// Create a client from an LFS URL string, normalizing the path.
+    fn from_lfs_url(url: &str) -> Result<Self> {
+        let lfs_url = Url::parse(url).map_err(|e| Error::InvalidUrl(e.to_string()))?;
+        // Ensure URL ends with /info/lfs/ for batch API
+        let lfs_url = if lfs_url.path().ends_with("/info/lfs/") {
+            lfs_url
+        } else if lfs_url.path().ends_with("/info/lfs") {
+            let mut url = lfs_url;
+            url.set_path(&format!("{}/", url.path()));
+            url
+        } else {
+            let mut url = lfs_url;
+            let path = url.path().trim_end_matches('/');
+            url.set_path(&format!("{}/info/lfs/", path));
+            url
+        };
+        Ok(LfsClient::with_url(lfs_url))
+    }
+
     /// Set basic authentication credentials.
     pub fn with_auth(self, username: &str, password: &str) -> Self {
         LfsClient {
@@ -788,5 +873,85 @@ mod tests {
 
         // Arc should be shared
         assert!(Arc::ptr_eq(&client1.inner, &client2.inner));
+    }
+
+    #[test]
+    #[cfg(feature = "git2-integration")]
+    fn test_from_repo_with_lfsconfig() {
+        use std::fs;
+
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+
+        // Add a remote
+        repo.remote("origin", "https://github.com/test/default.git")
+            .unwrap();
+
+        // Create .lfsconfig with custom URL
+        fs::write(
+            temp.path().join(".lfsconfig"),
+            "[lfs]\n\turl = https://custom-lfs.example.com/storage\n",
+        )
+        .unwrap();
+
+        let client = LfsClient::from_repo(&repo).unwrap();
+
+        // Should use the .lfsconfig URL, normalized with /info/lfs/
+        assert_eq!(
+            client.lfs_url().as_str(),
+            "https://custom-lfs.example.com/storage/info/lfs/"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "git2-integration")]
+    fn test_from_repo_derives_from_remote() {
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+
+        // Add a remote (no .lfsconfig)
+        repo.remote("origin", "https://github.com/test/repo.git")
+            .unwrap();
+
+        let client = LfsClient::from_repo(&repo).unwrap();
+
+        // Should derive from remote URL
+        assert_eq!(
+            client.lfs_url().as_str(),
+            "https://github.com/test/repo.git/info/lfs/"
+        );
+    }
+
+    #[test]
+    #[cfg(feature = "git2-integration")]
+    fn test_from_repo_git_config_overrides_lfsconfig() {
+        use std::fs;
+
+        let temp = tempfile::tempdir().unwrap();
+        let repo = git2::Repository::init(temp.path()).unwrap();
+
+        repo.remote("origin", "https://github.com/test/default.git")
+            .unwrap();
+
+        // Create .lfsconfig
+        fs::write(
+            temp.path().join(".lfsconfig"),
+            "[lfs]\n\turl = https://lfsconfig-url.example.com\n",
+        )
+        .unwrap();
+
+        // Set lfs.url in git config (should override .lfsconfig)
+        let mut config = repo.config().unwrap();
+        config
+            .set_str("lfs.url", "https://gitconfig-url.example.com")
+            .unwrap();
+
+        let client = LfsClient::from_repo(&repo).unwrap();
+
+        // Git config takes precedence over .lfsconfig
+        assert_eq!(
+            client.lfs_url().as_str(),
+            "https://gitconfig-url.example.com/info/lfs/"
+        );
     }
 }
