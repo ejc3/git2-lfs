@@ -77,7 +77,9 @@ impl LfsClient {
     pub fn batch(&self, request: &BatchRequest) -> Result<BatchResponse> {
         let url = self.inner.lfs_url.join("objects/batch")?;
 
-        let mut req = self.inner.agent
+        let mut req = self
+            .inner
+            .agent
             .post(url.as_str())
             .set("Accept", "application/vnd.git-lfs+json")
             .set("Content-Type", "application/vnd.git-lfs+json");
@@ -201,9 +203,9 @@ impl LfsClient {
         }
 
         // Get download action
-        let action = obj.download_action().ok_or_else(|| {
-            Error::NotFound(pointer.oid().to_hex())
-        })?;
+        let action = obj
+            .download_action()
+            .ok_or_else(|| Error::NotFound(pointer.oid().to_hex()))?;
 
         // Download the content
         let mut req = self.inner.agent.get(&action.href);

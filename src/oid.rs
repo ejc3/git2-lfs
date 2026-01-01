@@ -1,6 +1,6 @@
 //! LFS Object ID (OID) - SHA256 content hash.
 
-use sha2::{Sha256, Digest};
+use sha2::{Digest, Sha256};
 use std::fmt;
 
 use crate::{Error, Result};
@@ -27,8 +27,7 @@ impl Oid {
             )));
         }
 
-        let bytes = hex::decode(hex)
-            .map_err(|e| Error::InvalidOid(e.to_string()))?;
+        let bytes = hex::decode(hex).map_err(|e| Error::InvalidOid(e.to_string()))?;
 
         let mut arr = [0u8; 32];
         arr.copy_from_slice(&bytes);

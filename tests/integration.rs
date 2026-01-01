@@ -46,7 +46,9 @@ impl MockLfsServer {
                 match listener.accept() {
                     Ok((mut stream, _)) => {
                         stream.set_nonblocking(false).unwrap();
-                        stream.set_read_timeout(Some(std::time::Duration::from_secs(5))).unwrap();
+                        stream
+                            .set_read_timeout(Some(std::time::Duration::from_secs(5)))
+                            .unwrap();
 
                         let mut buffer = [0u8; 4096];
                         let n = stream.read(&mut buffer).unwrap_or(0);
@@ -152,12 +154,10 @@ fn test_client_batch_request() {
     let client = LfsClient::new(&server.url()).unwrap();
 
     // Create a batch request
-    let batch_req = BatchRequest::download(vec![
-        BatchRequestObject::new(
-            "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393",
-            12345,
-        ),
-    ]);
+    let batch_req = BatchRequest::download(vec![BatchRequestObject::new(
+        "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393",
+        12345,
+    )]);
 
     // Send batch request
     let result = client.batch(&batch_req);

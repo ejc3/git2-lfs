@@ -91,9 +91,9 @@ impl<'repo> LfsFilter<'repo> {
         }
 
         // Try any remote
-        let remotes = repo.remotes().map_err(|e| {
-            crate::Error::InvalidUrl(format!("failed to list remotes: {}", e))
-        })?;
+        let remotes = repo
+            .remotes()
+            .map_err(|e| crate::Error::InvalidUrl(format!("failed to list remotes: {}", e)))?;
 
         for name in remotes.iter().flatten() {
             if let Ok(remote) = repo.find_remote(name) {
@@ -150,7 +150,9 @@ mod tests {
         // Add .gitattributes to index
         {
             let mut index = repo.index().unwrap();
-            index.add_path(std::path::Path::new(".gitattributes")).unwrap();
+            index
+                .add_path(std::path::Path::new(".gitattributes"))
+                .unwrap();
             index.write().unwrap();
         }
 

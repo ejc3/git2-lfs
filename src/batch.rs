@@ -172,9 +172,7 @@ mod tests {
 
     #[test]
     fn test_batch_request_serialize() {
-        let request = BatchRequest::upload(vec![
-            BatchRequestObject::new("abc123", 1024),
-        ]);
+        let request = BatchRequest::upload(vec![BatchRequestObject::new("abc123", 1024)]);
 
         let json = serde_json::to_string(&request).unwrap();
         assert!(json.contains("\"operation\":\"upload\""));

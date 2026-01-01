@@ -71,9 +71,11 @@ impl Pointer {
             } else if let Some(rest) = line.strip_prefix("oid sha256:") {
                 oid = Some(Oid::from_hex(rest.trim())?);
             } else if let Some(rest) = line.strip_prefix("size ") {
-                size = Some(rest.trim().parse().map_err(|_| {
-                    Error::InvalidPointer("invalid size".into())
-                })?);
+                size = Some(
+                    rest.trim()
+                        .parse()
+                        .map_err(|_| Error::InvalidPointer("invalid size".into()))?,
+                );
             }
         }
 
@@ -188,10 +190,10 @@ mod tests {
         assert!(Pointer::parse(b"version https://git-lfs.github.com/spec/v1\nsize 123\n").is_err());
 
         // Missing size
-        assert!(Pointer::parse(
-            b"version https://git-lfs.github.com/spec/v1\noid sha256:abc\n"
-        )
-        .is_err());
+        assert!(
+            Pointer::parse(b"version https://git-lfs.github.com/spec/v1\noid sha256:abc\n")
+                .is_err()
+        );
     }
 
     #[test]

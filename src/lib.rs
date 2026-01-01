@@ -29,20 +29,20 @@
 //! let downloaded = client.download(&pointer).unwrap();
 //! ```
 
+mod batch;
+mod client;
 mod error;
 mod oid;
 mod pointer;
-mod batch;
-mod client;
 
 #[cfg(feature = "git2-integration")]
 mod filter;
 
+pub use batch::{Action, BatchObject, BatchRequest, BatchRequestObject, BatchResponse, Operation};
+pub use client::LfsClient;
 pub use error::{Error, Result};
 pub use oid::Oid;
 pub use pointer::Pointer;
-pub use batch::{BatchRequest, BatchRequestObject, BatchResponse, BatchObject, Action, Operation};
-pub use client::LfsClient;
 
 #[cfg(feature = "git2-integration")]
 pub use filter::LfsFilter;
