@@ -49,6 +49,9 @@ pub use oid::{HashingWriter, Oid};
 pub use pointer::Pointer;
 
 #[cfg(feature = "git2-integration")]
-pub use filter::LfsFilter;
+pub use filter::{
+    register_lfs_filter, register_lfs_filter_for_repo, register_lfs_filter_with_cache,
+    LfsFilter, LfsFilterRegistration,
+};
 #[cfg(feature = "git2-integration")]
 pub use repo::LfsRepo;

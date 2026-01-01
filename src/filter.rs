@@ -1,6 +1,24 @@
 //! Git2 filter integration for LFS.
 //!
-//! This module provides helpers for using LFS with git2's filter API.
+//! This module provides two ways to use LFS with git2:
+//!
+//! 1. **Manual filtering** via [`LfsFilter`] - call `clean()` and `smudge()` explicitly
+//! 2. **Automatic filtering** via [`register_lfs_filter`] - register once, all git2 operations use LFS
+//!
+//! ## Automatic Filtering (Recommended)
+//!
+//! ```ignore
+//! use git2::Repository;
+//! use git2_lfs::{register_lfs_filter, LfsClient};
+//!
+//! // Register LFS filter globally (once at startup)
+//! let client = LfsClient::from_repo(&repo)?;
+//! let _registration = register_lfs_filter(client)?;
+//!
+//! // Now all git2 operations automatically use LFS!
+//! repo.checkout_head()?;  // LFS files are smudged
+//! index.add_path("large.bin")?;  // LFS files are cleaned
+//! ```
 
 use git2::Repository;
 use std::fs;
@@ -250,6 +268,203 @@ impl<'repo> LfsFilter<'repo> {
     }
 }
 
+// ============================================================================
+// Automatic Filter Registration
+// ============================================================================
+
+use git2::{Filter, FilterCheck, FilterMode, FilterSource};
+
+/// Global LFS filter that implements git2's Filter trait.
+///
+/// This filter is registered with libgit2 and automatically invoked
+/// for all files matching `filter=lfs` in `.gitattributes`.
+struct GlobalLfsFilter {
+    client: LfsClient,
+    /// Cache directory path (we can't hold ObjectCache directly due to thread safety)
+    cache_path: Option<std::path::PathBuf>,
+}
+
+impl GlobalLfsFilter {
+    fn get_cache(&self) -> Option<ObjectCache> {
+        self.cache_path.as_ref().map(|p| ObjectCache::new(p))
+    }
+}
+
+impl Filter for GlobalLfsFilter {
+    fn check(&self, _src: &FilterSource<'_>) -> std::result::Result<FilterCheck, git2::Error> {
+        // Always apply - libgit2 already matched filter=lfs in .gitattributes
+        Ok(FilterCheck::Apply)
+    }
+
+    fn apply(
+        &self,
+        src: &FilterSource<'_>,
+        input: &[u8],
+    ) -> std::result::Result<Vec<u8>, git2::Error> {
+        let result = match src.mode() {
+            FilterMode::ToOdb => self.clean(input),
+            FilterMode::ToWorktree => self.smudge(input),
+        };
+
+        result.map_err(|e| git2::Error::from_str(&e.to_string()))
+    }
+}
+
+impl GlobalLfsFilter {
+    /// Clean: working tree -> repository (upload to LFS, return pointer)
+    fn clean(&self, content: &[u8]) -> Result<Vec<u8>> {
+        // Already a pointer? Pass through
+        if Pointer::is_pointer(content) {
+            return Ok(content.to_vec());
+        }
+
+        // Generate pointer
+        let pointer = Pointer::from_content(content);
+
+        // Store in cache
+        if let Some(cache) = self.get_cache() {
+            let _ = cache.put_verified(&pointer, content);
+        }
+
+        // Upload to LFS server
+        self.client.upload(&pointer, content)?;
+
+        // Return pointer bytes
+        Ok(pointer.encode_bytes())
+    }
+
+    /// Smudge: repository -> working tree (download from LFS)
+    fn smudge(&self, content: &[u8]) -> Result<Vec<u8>> {
+        // Not a pointer? Pass through
+        if !Pointer::is_pointer(content) {
+            return Ok(content.to_vec());
+        }
+
+        // Parse pointer
+        let pointer = Pointer::parse(content)?;
+
+        // Check cache first
+        if let Some(cache) = self.get_cache() {
+            if let Some(cached) = cache.get_verified(&pointer) {
+                return Ok(cached);
+            }
+        }
+
+        // Download from LFS server
+        let downloaded = self.client.download(&pointer)?;
+
+        // Store in cache
+        if let Some(cache) = self.get_cache() {
+            let _ = cache.put_verified(&pointer, &downloaded);
+        }
+
+        Ok(downloaded)
+    }
+}
+
+/// Handle to a registered LFS filter.
+///
+/// When dropped, the filter is unregistered from libgit2.
+/// Keep this handle alive for as long as you want LFS filtering to be active.
+pub struct LfsFilterRegistration {
+    _inner: git2::FilterRegistration,
+}
+
+/// Register an LFS filter globally with libgit2.
+///
+/// After calling this function, all git2 operations on repositories with
+/// `filter=lfs` in `.gitattributes` will automatically use LFS.
+///
+/// # Arguments
+///
+/// * `client` - The LFS client to use for uploads/downloads
+///
+/// # Returns
+///
+/// A registration handle. The filter remains active until this handle is dropped.
+///
+/// # Example
+///
+/// ```ignore
+/// use git2::Repository;
+/// use git2_lfs::{register_lfs_filter, LfsClient};
+///
+/// let repo = Repository::open(".")?;
+/// let client = LfsClient::from_repo(&repo)?
+///     .with_token(&token);
+///
+/// // Register once at startup
+/// let _reg = register_lfs_filter(client)?;
+///
+/// // Now all git2 operations automatically use LFS
+/// repo.checkout_head()?;  // Smudges LFS files
+/// ```
+pub fn register_lfs_filter(client: LfsClient) -> Result<LfsFilterRegistration> {
+    register_lfs_filter_with_cache(client, None)
+}
+
+/// Register an LFS filter with a specific cache directory.
+///
+/// # Arguments
+///
+/// * `client` - The LFS client to use for uploads/downloads
+/// * `cache_path` - Optional path to the cache directory. If None, caching is disabled.
+///
+/// # Example
+///
+/// ```ignore
+/// use git2_lfs::{register_lfs_filter_with_cache, LfsClient};
+/// use std::path::PathBuf;
+///
+/// let client = LfsClient::new("https://github.com/owner/repo.git")?;
+/// let cache = PathBuf::from("/path/to/.git/lfs/objects");
+///
+/// let _reg = register_lfs_filter_with_cache(client, Some(cache))?;
+/// ```
+pub fn register_lfs_filter_with_cache(
+    client: LfsClient,
+    cache_path: Option<std::path::PathBuf>,
+) -> Result<LfsFilterRegistration> {
+    let filter = GlobalLfsFilter { client, cache_path };
+
+    let registration = git2::filter_register(
+        "lfs",
+        "filter=lfs",
+        git2::filter_priority::DRIVER,
+        filter,
+    )
+    .map_err(|e| crate::Error::Http(format!("failed to register filter: {}", e)))?;
+
+    Ok(LfsFilterRegistration { _inner: registration })
+}
+
+/// Register an LFS filter for a specific repository.
+///
+/// This is a convenience function that reads the LFS configuration from the
+/// repository and sets up the cache in the standard location.
+///
+/// # Arguments
+///
+/// * `repo` - The repository to configure LFS for
+///
+/// # Example
+///
+/// ```ignore
+/// use git2::Repository;
+/// use git2_lfs::register_lfs_filter_for_repo;
+///
+/// let repo = Repository::open(".")?;
+/// let _reg = register_lfs_filter_for_repo(&repo)?;
+///
+/// // LFS is now active for all operations
+/// ```
+pub fn register_lfs_filter_for_repo(repo: &Repository) -> Result<LfsFilterRegistration> {
+    let client = LfsClient::from_repo(repo)?;
+    let cache_path = Some(repo.path().join("lfs").join("objects"));
+
+    register_lfs_filter_with_cache(client, cache_path)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -348,5 +563,47 @@ mod tests {
 
         // Non-pointer content should pass through unchanged
         assert_eq!(result, content);
+    }
+
+    #[test]
+    fn test_global_filter_registration() {
+        // Test that we can register the global LFS filter
+        let client = LfsClient::new("https://github.com/test/repo.git").unwrap();
+
+        // Register the filter
+        let registration = register_lfs_filter(client);
+        assert!(registration.is_ok(), "Filter registration should succeed");
+
+        // Registration should stay alive
+        let _reg = registration.unwrap();
+
+        // Create a second client and try to register with cache
+        let client2 = LfsClient::new("https://github.com/test/repo2.git").unwrap();
+        let temp_dir = TempDir::new().unwrap();
+        let cache_path = temp_dir.path().join("lfs").join("objects");
+
+        // This should fail because 'lfs' filter is already registered
+        let result2 = register_lfs_filter_with_cache(client2, Some(cache_path));
+        assert!(result2.is_err(), "Duplicate registration should fail");
+    }
+
+    #[test]
+    fn test_global_filter_clean_smudge() {
+        // Test that GlobalLfsFilter clean/smudge work correctly
+        let client = LfsClient::new("https://github.com/test/repo.git").unwrap();
+        let filter = GlobalLfsFilter {
+            client,
+            cache_path: None,
+        };
+
+        // Smudge non-pointer content should pass through
+        let content = b"regular file content";
+        let result = filter.smudge(content).unwrap();
+        assert_eq!(result, content);
+
+        // Clean content that's already a pointer should pass through
+        let pointer_content = b"version https://git-lfs.github.com/spec/v1\noid sha256:abc123\nsize 1234\n";
+        let result = filter.clean(pointer_content).unwrap();
+        assert_eq!(result, pointer_content);
     }
 }
