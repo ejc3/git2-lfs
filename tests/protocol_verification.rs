@@ -2,7 +2,7 @@
 //!
 //! These tests verify our implementation matches the official git-lfs behavior.
 
-use git2_lfs::{BatchRequest, BatchRequestObject, BatchResponse, Pointer};
+use git2_lfs::Pointer;
 
 /// Verify our pointer output exactly matches git-lfs CLI output.
 #[test]
@@ -42,26 +42,8 @@ size 12345\n";
     assert_eq!(parsed.size(), 12345);
 }
 
-/// Test roundtrip: content -> pointer -> encode -> parse
-#[test]
-fn test_roundtrip_various_sizes() {
-    let test_cases = vec![
-        vec![0u8; 0],           // Empty file
-        vec![0u8; 1],           // 1 byte
-        vec![0u8; 100],         // 100 bytes
-        vec![0u8; 1024],        // 1KB
-        vec![0u8; 1024 * 1024], // 1MB
-    ];
-
-    for content in test_cases {
-        let pointer1 = Pointer::from_content(&content);
-        let encoded = pointer1.encode_bytes();
-        let pointer2 = Pointer::parse(&encoded).expect("Failed to parse our own pointer");
-
-        assert_eq!(pointer1.oid().to_hex(), pointer2.oid().to_hex());
-        assert_eq!(pointer1.size(), pointer2.size());
-    }
-}
+// NOTE: test_roundtrip_various_sizes removed - e2e test proves roundtrip works,
+// and test_pointer_matches_git_lfs_cli verifies format correctness
 
 /// Verify SHA256 computation matches openssl.
 #[test]
@@ -93,47 +75,5 @@ fn test_sha256_matches_openssl() {
     }
 }
 
-/// Test batch request JSON format matches spec.
-#[test]
-fn test_batch_request_format() {
-    let request = BatchRequest::upload(vec![BatchRequestObject::new("abc123", 1024)]);
-
-    let json = serde_json::to_value(&request).unwrap();
-
-    // Verify structure matches LFS Batch API spec
-    assert_eq!(json["operation"], "upload");
-    assert!(json["transfers"]
-        .as_array()
-        .unwrap()
-        .contains(&serde_json::json!("basic")));
-    assert_eq!(json["objects"][0]["oid"], "abc123");
-    assert_eq!(json["objects"][0]["size"], 1024);
-}
-
-/// Test batch response parsing.
-#[test]
-fn test_batch_response_parsing() {
-    // Response format from GitHub LFS server
-    let response_json = r#"{
-        "transfer": "basic",
-        "objects": [{
-            "oid": "4d7a214614ab2935c943f9e0ff69d22eadbb8f32b1258daaa5e2ca24d17e2393",
-            "size": 12345,
-            "authenticated": true,
-            "actions": {
-                "download": {
-                    "href": "https://github-cloud.githubusercontent.com/...",
-                    "header": {
-                        "Authorization": "RemoteAuth ..."
-                    },
-                    "expires_in": 3600
-                }
-            }
-        }]
-    }"#;
-
-    let response: BatchResponse = serde_json::from_str(response_json).unwrap();
-    assert_eq!(response.transfer, "basic");
-    assert_eq!(response.objects.len(), 1);
-    assert!(response.objects[0].download_action().is_some());
-}
+// NOTE: Batch request/response tests are in src/batch.rs unit tests
+// and test_client_batch_request in integration.rs tests the full flow

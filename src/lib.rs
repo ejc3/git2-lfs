@@ -30,6 +30,7 @@
 //! ```
 
 mod batch;
+mod cache;
 mod client;
 mod error;
 mod oid;
@@ -37,8 +38,11 @@ mod pointer;
 
 #[cfg(feature = "git2-integration")]
 mod filter;
+#[cfg(feature = "git2-integration")]
+mod repo;
 
 pub use batch::{Action, BatchObject, BatchRequest, BatchRequestObject, BatchResponse, Operation};
+pub use cache::{CacheWriter, ObjectCache};
 pub use client::LfsClient;
 pub use error::{Error, Result};
 pub use oid::Oid;
@@ -46,3 +50,5 @@ pub use pointer::Pointer;
 
 #[cfg(feature = "git2-integration")]
 pub use filter::LfsFilter;
+#[cfg(feature = "git2-integration")]
+pub use repo::LfsRepo;

@@ -31,12 +31,17 @@ base64 = "0.22"
 thiserror = "1.0"
 
 # Optional git2 integration (using forked version with filter API support)
-git2 = { git = "https://github.com/ejc3/git2-rs.git", branch = "master", optional = true }
+git2 = { git = "https://github.com/ejc3/git2-rs.git", branch = "master", optional = true, features = ["https"] }
 
 [dev-dependencies]
 tempfile = "3.1"
+uuid = { version = "1.0", features = ["v4"] }
 
 [features]
 default = []
 # Enable git2 filter integration
 git2-integration = ["git2"]
+
+[[test]]
+name = "e2e"
+required-features = ["git2-integration"]

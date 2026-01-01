@@ -3,6 +3,11 @@
 //! These tests verify the full LFS workflow including HTTP client operations.
 
 use git2_lfs::{BatchRequest, BatchRequestObject, LfsClient, Pointer};
+
+// Note: Pointer is used in test_pointer_edge_cases
+
+// Note: URL derivation and client clone tests are in src/client.rs unit tests.
+// This file focuses on integration tests that require HTTP communication.
 use std::io::{Read, Write};
 use std::net::TcpListener;
 use std::sync::mpsc;
@@ -18,10 +23,11 @@ struct MockLfsServer {
 }
 
 #[derive(Debug)]
+#[allow(dead_code)]
 struct MockRequest {
     method: String,
     path: String,
-    body: String,
+    body: String,  // Captured for potential debugging
 }
 
 impl MockLfsServer {
@@ -186,97 +192,7 @@ fn test_client_batch_request() {
     }
 }
 
-#[test]
-fn test_client_derives_lfs_url() {
-    // Test various URL formats
-    let test_cases = vec![
-        (
-            "https://github.com/owner/repo.git",
-            "https://github.com/owner/repo/info/lfs",
-        ),
-        (
-            "https://github.com/owner/repo",
-            "https://github.com/owner/repo/info/lfs",
-        ),
-        (
-            "git@github.com:owner/repo.git",
-            "https://github.com/owner/repo/info/lfs",
-        ),
-        (
-            "https://gitlab.com/group/project.git",
-            "https://gitlab.com/group/project/info/lfs",
-        ),
-    ];
-
-    for (input, expected) in test_cases {
-        let client = LfsClient::new(input).unwrap();
-        assert_eq!(
-            client.lfs_url().as_str(),
-            expected,
-            "Failed for input: {}",
-            input
-        );
-    }
-}
-
-#[test]
-fn test_pointer_workflow() {
-    // Simulate clean/smudge workflow
-    let original_content = b"This is the original large file content that would be stored in LFS.";
-
-    // Clean: Generate pointer from content
-    let pointer = Pointer::from_content(original_content);
-
-    // Verify pointer metadata
-    assert_eq!(pointer.size(), original_content.len() as u64);
-    assert!(!pointer.oid().to_hex().is_empty());
-
-    // Encode pointer (what gets stored in git)
-    let encoded = pointer.encode();
-    assert!(encoded.contains("version https://git-lfs.github.com/spec/v1"));
-    assert!(encoded.contains(&format!("oid sha256:{}", pointer.oid().to_hex())));
-    assert!(encoded.contains(&format!("size {}", pointer.size())));
-
-    // Smudge: Parse pointer back
-    let parsed = Pointer::parse(encoded.as_bytes()).unwrap();
-    assert_eq!(parsed.oid(), pointer.oid());
-    assert_eq!(parsed.size(), pointer.size());
-
-    // Verify is_pointer detection
-    assert!(Pointer::is_pointer(encoded.as_bytes()));
-    assert!(!Pointer::is_pointer(original_content));
-}
-
-#[test]
-fn test_client_clone() {
-    let client1 = LfsClient::new("https://github.com/test/repo.git").unwrap();
-    let client2 = client1.clone();
-
-    // Both should have the same LFS URL
-    assert_eq!(client1.lfs_url(), client2.lfs_url());
-}
-
-#[test]
-fn test_batch_request_json_format() {
-    let request = BatchRequest::upload(vec![
-        BatchRequestObject::new("abc123", 1024),
-        BatchRequestObject::new("def456", 2048),
-    ]);
-
-    let json = serde_json::to_value(&request).unwrap();
-
-    // Verify structure matches LFS spec
-    assert_eq!(json["operation"], "upload");
-    assert!(json["transfers"]
-        .as_array()
-        .unwrap()
-        .contains(&serde_json::json!("basic")));
-    assert_eq!(json["objects"].as_array().unwrap().len(), 2);
-    assert_eq!(json["objects"][0]["oid"], "abc123");
-    assert_eq!(json["objects"][0]["size"], 1024);
-    assert_eq!(json["objects"][1]["oid"], "def456");
-    assert_eq!(json["objects"][1]["size"], 2048);
-}
+// NOTE: test_pointer_workflow removed - covered by e2e test and test_pointer_matches_git_lfs_cli
 
 #[test]
 fn test_pointer_edge_cases() {
