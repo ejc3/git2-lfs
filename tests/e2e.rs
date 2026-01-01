@@ -30,37 +30,38 @@ fn git(dir: &std::path::Path, args: &[&str]) -> String {
     String::from_utf8_lossy(&output.stdout).to_string()
 }
 
-fn has_git_lfs() -> bool {
-    Command::new("git")
+fn require_git_lfs() {
+    let output = Command::new("git")
         .args(["lfs", "version"])
         .output()
-        .map(|o| o.status.success())
-        .unwrap_or(false)
+        .expect("failed to run git lfs");
+
+    if !output.status.success() {
+        panic!(
+            "git-lfs is required but not installed. Install with: brew install git-lfs (macOS) or apt install git-lfs (Linux)"
+        );
+    }
 }
 
-fn gh_token() -> Option<String> {
-    Command::new("gh")
+fn require_gh_token() -> String {
+    let output = Command::new("gh")
         .args(["auth", "token"])
         .output()
-        .ok()
-        .filter(|o| o.status.success())
-        .map(|o| String::from_utf8_lossy(&o.stdout).trim().to_string())
+        .expect("failed to run gh auth token - is gh CLI installed?");
+
+    if !output.status.success() {
+        panic!(
+            "GitHub authentication required. Run: gh auth login"
+        );
+    }
+
+    String::from_utf8_lossy(&output.stdout).trim().to_string()
 }
 
 #[test]
 fn test_cli_vs_library() {
-    if !has_git_lfs() {
-        eprintln!("Skipping: git-lfs not installed");
-        return;
-    }
-
-    let token = match gh_token() {
-        Some(t) => t,
-        None => {
-            eprintln!("Skipping: gh not authenticated");
-            return;
-        }
-    };
+    require_git_lfs();
+    let token = require_gh_token();
 
     // Same content for both branches
     let content = format!("Test content {}\n", uuid::Uuid::new_v4());
@@ -256,18 +257,8 @@ fn test_cli_vs_library() {
 /// Uploads with CLI, downloads with library - verifies interoperability.
 #[test]
 fn test_library_download_vs_cli() {
-    if !has_git_lfs() {
-        eprintln!("Skipping: git-lfs not installed");
-        return;
-    }
-
-    let token = match gh_token() {
-        Some(t) => t,
-        None => {
-            eprintln!("Skipping: gh not authenticated");
-            return;
-        }
-    };
+    require_git_lfs();
+    let token = require_gh_token();
 
     println!("=== Testing Library Download vs CLI ===\n");
 
@@ -329,13 +320,7 @@ fn test_library_download_vs_cli() {
 /// Test local cache prevents re-download.
 #[test]
 fn test_cache_hit() {
-    let token = match gh_token() {
-        Some(t) => t,
-        None => {
-            eprintln!("Skipping: gh not authenticated");
-            return;
-        }
-    };
+    let token = require_gh_token();
 
     println!("=== Testing Cache Hit ===\n");
 
@@ -392,13 +377,7 @@ fn test_cache_hit() {
 /// Test batch upload of multiple files.
 #[test]
 fn test_batch_upload() {
-    let token = match gh_token() {
-        Some(t) => t,
-        None => {
-            eprintln!("Skipping: gh not authenticated");
-            return;
-        }
-    };
+    let token = require_gh_token();
 
     println!("=== Testing Batch Upload ===\n");
 
@@ -445,13 +424,7 @@ fn test_batch_upload() {
 /// Test batch download of multiple files.
 #[test]
 fn test_batch_download() {
-    let token = match gh_token() {
-        Some(t) => t,
-        None => {
-            eprintln!("Skipping: gh not authenticated");
-            return;
-        }
-    };
+    let token = require_gh_token();
 
     println!("=== Testing Batch Download ===\n");
 
@@ -495,18 +468,8 @@ fn test_batch_download() {
 /// Test that our cache layout matches git-lfs CLI exactly.
 #[test]
 fn test_cache_layout_matches_cli() {
-    if !has_git_lfs() {
-        eprintln!("Skipping: git-lfs not installed");
-        return;
-    }
-
-    let token = match gh_token() {
-        Some(t) => t,
-        None => {
-            eprintln!("Skipping: gh not authenticated");
-            return;
-        }
-    };
+    require_git_lfs();
+    let token = require_gh_token();
 
     println!("=== Testing Cache Layout vs CLI ===\n");
 
@@ -580,18 +543,8 @@ fn test_cache_layout_matches_cli() {
 /// Test large file (1MB) roundtrip with CLI.
 #[test]
 fn test_large_file_roundtrip_vs_cli() {
-    if !has_git_lfs() {
-        eprintln!("Skipping: git-lfs not installed");
-        return;
-    }
-
-    let token = match gh_token() {
-        Some(t) => t,
-        None => {
-            eprintln!("Skipping: gh not authenticated");
-            return;
-        }
-    };
+    require_git_lfs();
+    let token = require_gh_token();
 
     println!("=== Testing Large File (1MB) Roundtrip ===\n");
 
@@ -688,18 +641,8 @@ fn test_large_file_roundtrip_vs_cli() {
 /// Test multiple files in one commit matches CLI behavior.
 #[test]
 fn test_multi_file_commit_vs_cli() {
-    if !has_git_lfs() {
-        eprintln!("Skipping: git-lfs not installed");
-        return;
-    }
-
-    let token = match gh_token() {
-        Some(t) => t,
-        None => {
-            eprintln!("Skipping: gh not authenticated");
-            return;
-        }
-    };
+    require_git_lfs();
+    let token = require_gh_token();
 
     println!("=== Testing Multi-File Commit vs CLI ===\n");
 
@@ -884,13 +827,7 @@ fn test_multi_file_commit_vs_cli() {
 /// Test streaming upload and download.
 #[test]
 fn test_streaming_upload_download() {
-    let token = match gh_token() {
-        Some(t) => t,
-        None => {
-            eprintln!("Skipping: gh not authenticated");
-            return;
-        }
-    };
+    let token = require_gh_token();
 
     println!("=== Testing Streaming Upload/Download ===\n");
 
