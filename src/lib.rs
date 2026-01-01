@@ -41,7 +41,7 @@ mod filter;
 pub use error::{Error, Result};
 pub use oid::Oid;
 pub use pointer::Pointer;
-pub use batch::{BatchRequest, BatchResponse, BatchObject, Action, Operation};
+pub use batch::{BatchRequest, BatchRequestObject, BatchResponse, BatchObject, Action, Operation};
 pub use client::LfsClient;
 
 #[cfg(feature = "git2-integration")]
