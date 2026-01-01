@@ -27,6 +27,7 @@ Pure Rust Git LFS implementation for use with git2.
 - **Automatic LFS** - `LfsRepo.add()` handles upload + pointer generation
 - **Streaming** - `upload_file()`, `download_to_file()` for memory-efficient large file handling
 - **HashingWriter** - Stream data while computing SHA256 hash
+- **Config auto-discovery** - `LfsClient::from_repo()` reads `.lfsconfig`, git config, or derives from remote
 
 ## Testing
 
