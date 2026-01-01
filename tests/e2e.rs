@@ -492,6 +492,395 @@ fn test_batch_download() {
     println!("- Content integrity verified for all files");
 }
 
+/// Test that our cache layout matches git-lfs CLI exactly.
+#[test]
+fn test_cache_layout_matches_cli() {
+    if !has_git_lfs() {
+        eprintln!("Skipping: git-lfs not installed");
+        return;
+    }
+
+    let token = match gh_token() {
+        Some(t) => t,
+        None => {
+            eprintln!("Skipping: gh not authenticated");
+            return;
+        }
+    };
+
+    println!("=== Testing Cache Layout vs CLI ===\n");
+
+    // Create a repo with git-lfs and add a file
+    let cli_dir = TempDir::new().unwrap();
+    let cli_repo = cli_dir.path();
+    let auth_url = format!(
+        "https://x-access-token:{}@github.com/ejc3/git2-lfs.git",
+        token
+    );
+
+    Command::new("git")
+        .args(["clone", "--depth=1", &auth_url, cli_repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    git(cli_repo, &["lfs", "install", "--local"]);
+    git(cli_repo, &["lfs", "track", "*.bin"]);
+
+    // Create content and add via CLI
+    let content = format!("Cache layout test {}\n", uuid::Uuid::new_v4());
+    fs::write(cli_repo.join("cache-test.bin"), &content).unwrap();
+    git(cli_repo, &["add", "."]);
+
+    // Get the pointer to find the OID
+    let pointer_text = git(cli_repo, &["show", ":cache-test.bin"]);
+    let pointer = Pointer::parse(pointer_text.as_bytes()).expect("parse pointer");
+    let oid = pointer.oid().to_hex();
+    println!("OID: {}", oid);
+
+    // Check CLI cache location
+    let cli_cache_path = cli_repo
+        .join(".git")
+        .join("lfs")
+        .join("objects")
+        .join(&oid[0..2])
+        .join(&oid[2..4])
+        .join(&oid);
+
+    println!("CLI cache path: {:?}", cli_cache_path);
+    assert!(
+        cli_cache_path.exists(),
+        "CLI should cache object at standard location"
+    );
+
+    // Verify our ObjectCache uses the same layout
+    let our_cache = ObjectCache::for_repo(&cli_repo.join(".git"));
+    let our_path = our_cache.object_path(pointer.oid());
+
+    assert_eq!(
+        cli_cache_path, our_path,
+        "Our cache path should match CLI cache path"
+    );
+    println!("Our cache path: {:?}", our_path);
+    println!("Paths match!\n");
+
+    // Verify we can read what CLI cached
+    let cached_content = our_cache.get(pointer.oid()).expect("should read CLI cache");
+    assert_eq!(
+        cached_content,
+        content.as_bytes(),
+        "Cached content should match"
+    );
+    println!("Successfully read content from CLI cache!");
+
+    println!("\n=== SUCCESS ===");
+    println!("- Cache path format matches CLI exactly");
+    println!("- Can read objects cached by CLI");
+}
+
+/// Test large file (1MB) roundtrip with CLI.
+#[test]
+fn test_large_file_roundtrip_vs_cli() {
+    if !has_git_lfs() {
+        eprintln!("Skipping: git-lfs not installed");
+        return;
+    }
+
+    let token = match gh_token() {
+        Some(t) => t,
+        None => {
+            eprintln!("Skipping: gh not authenticated");
+            return;
+        }
+    };
+
+    println!("=== Testing Large File (1MB) Roundtrip ===\n");
+
+    // Create 1MB of unique content
+    let mut content = Vec::with_capacity(1024 * 1024);
+    let uuid_str = uuid::Uuid::new_v4().to_string();
+    while content.len() < 1024 * 1024 {
+        content.extend_from_slice(uuid_str.as_bytes());
+        content.push(b'\n');
+    }
+    content.truncate(1024 * 1024); // Exactly 1MB
+
+    println!("Created {} bytes of content", content.len());
+
+    // Upload using our library (streaming)
+    let temp_dir = TempDir::new().unwrap();
+    let upload_path = temp_dir.path().join("large.bin");
+    fs::write(&upload_path, &content).unwrap();
+
+    let client = LfsClient::new("https://github.com/ejc3/git2-lfs.git")
+        .unwrap()
+        .with_token(&token);
+
+    println!("Uploading 1MB via streaming...");
+    let pointer = client.upload_file(&upload_path).expect("upload failed");
+    println!("Upload complete! OID: {}", pointer.oid().to_hex());
+
+    // Create a repo and have CLI download it
+    let cli_dir = TempDir::new().unwrap();
+    let cli_repo = cli_dir.path();
+    let auth_url = format!(
+        "https://x-access-token:{}@github.com/ejc3/git2-lfs.git",
+        token
+    );
+
+    Command::new("git")
+        .args(["clone", "--depth=1", &auth_url, cli_repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    let branch = format!("e2e-large-{}", std::process::id());
+    git(cli_repo, &["checkout", "-b", &branch]);
+    git(cli_repo, &["lfs", "install", "--local"]);
+    git(cli_repo, &["lfs", "track", "*.bin"]);
+
+    // Write the pointer file (not content) and commit
+    fs::write(cli_repo.join("large.bin"), pointer.encode()).unwrap();
+    fs::write(
+        cli_repo.join(".gitattributes"),
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    )
+    .unwrap();
+    git(cli_repo, &["add", "."]);
+    git(cli_repo, &["commit", "-m", "add large file"]);
+    git(cli_repo, &["push", "origin", &branch]);
+    println!("Pushed pointer to branch {}", branch);
+
+    // Fresh clone with CLI to test download
+    let fresh_dir = TempDir::new().unwrap();
+    let clone_result = Command::new("git")
+        .args([
+            "clone",
+            "--branch",
+            &branch,
+            &auth_url,
+            fresh_dir.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    if !clone_result.status.success() {
+        git(cli_repo, &["push", "origin", "--delete", &branch]);
+        panic!(
+            "Clone failed: {}",
+            String::from_utf8_lossy(&clone_result.stderr)
+        );
+    }
+
+    // Verify content
+    let downloaded = fs::read(fresh_dir.path().join("large.bin")).unwrap();
+    assert_eq!(downloaded.len(), content.len(), "Size should match");
+    assert_eq!(downloaded, content, "Content should match exactly");
+    println!("CLI downloaded 1MB successfully!");
+
+    // Cleanup
+    git(cli_repo, &["push", "origin", "--delete", &branch]);
+
+    println!("\n=== SUCCESS ===");
+    println!("- Streaming upload of 1MB file works");
+    println!("- CLI can download large files we uploaded");
+    println!("- Content integrity verified");
+}
+
+/// Test multiple files in one commit matches CLI behavior.
+#[test]
+fn test_multi_file_commit_vs_cli() {
+    if !has_git_lfs() {
+        eprintln!("Skipping: git-lfs not installed");
+        return;
+    }
+
+    let token = match gh_token() {
+        Some(t) => t,
+        None => {
+            eprintln!("Skipping: gh not authenticated");
+            return;
+        }
+    };
+
+    println!("=== Testing Multi-File Commit vs CLI ===\n");
+
+    // Create multiple unique files
+    let files: Vec<(String, Vec<u8>)> = (0..3)
+        .map(|i| {
+            let name = format!("file{}.bin", i);
+            let content = format!("Multi-file test {} - {}\n", i, uuid::Uuid::new_v4()).into_bytes();
+            (name, content)
+        })
+        .collect();
+
+    println!("Created {} files", files.len());
+
+    // === CLI Side: Create pointers ===
+    let cli_dir = TempDir::new().unwrap();
+    let cli_repo = cli_dir.path();
+    let auth_url = format!(
+        "https://x-access-token:{}@github.com/ejc3/git2-lfs.git",
+        token
+    );
+
+    Command::new("git")
+        .args(["clone", "--depth=1", &auth_url, cli_repo.to_str().unwrap()])
+        .output()
+        .unwrap();
+
+    git(cli_repo, &["checkout", "-b", "test-multi-cli"]);
+    git(cli_repo, &["lfs", "install", "--local"]);
+    git(cli_repo, &["lfs", "track", "*.bin"]);
+
+    for (name, content) in &files {
+        fs::write(cli_repo.join(name), content).unwrap();
+    }
+    git(cli_repo, &["add", "."]);
+
+    // Get CLI pointers
+    let cli_pointers: Vec<String> = files
+        .iter()
+        .map(|(name, _)| git(cli_repo, &["show", &format!(":{}", name)]))
+        .collect();
+
+    println!("CLI pointers generated");
+
+    // === Library Side: Create pointers ===
+    let lib_pointers: Vec<String> = files
+        .iter()
+        .map(|(_, content)| Pointer::from_content(content).encode())
+        .collect();
+
+    println!("Library pointers generated");
+
+    // === Compare ===
+    for (i, ((name, _), (cli, lib))) in files
+        .iter()
+        .zip(cli_pointers.iter().zip(lib_pointers.iter()))
+        .enumerate()
+    {
+        assert_eq!(
+            cli.trim(),
+            lib.trim(),
+            "Pointer mismatch for file {}: {}",
+            i,
+            name
+        );
+        println!("  {} - pointers match!", name);
+    }
+
+    // === Test batch upload with library, download with CLI ===
+    let branch = format!("e2e-multi-{}", std::process::id());
+    let lib_dir = TempDir::new().unwrap();
+
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(|_url, _username, _allowed| {
+        Cred::userpass_plaintext("x-access-token", &token)
+    });
+
+    let mut fetch_options = git2::FetchOptions::new();
+    fetch_options.remote_callbacks(callbacks);
+
+    let mut builder = git2::build::RepoBuilder::new();
+    builder.fetch_options(fetch_options);
+
+    let repo = builder
+        .clone("https://github.com/ejc3/git2-lfs.git", lib_dir.path())
+        .expect("clone failed");
+
+    {
+        let head = repo.head().unwrap().peel_to_commit().unwrap();
+        repo.branch(&branch, &head, false).unwrap();
+        repo.set_head(&format!("refs/heads/{}", branch)).unwrap();
+        repo.checkout_head(Some(git2::build::CheckoutBuilder::new().force()))
+            .unwrap();
+    }
+
+    fs::write(
+        lib_dir.path().join(".gitattributes"),
+        "*.bin filter=lfs diff=lfs merge=lfs -text\n",
+    )
+    .unwrap();
+
+    let client = LfsClient::new("https://github.com/ejc3/git2-lfs.git")
+        .unwrap()
+        .with_token(&token);
+    let lfs_repo = LfsRepo::new(repo, client);
+
+    // Write all files and add
+    for (name, content) in &files {
+        fs::write(lib_dir.path().join(name), content).unwrap();
+    }
+
+    lfs_repo.add(".gitattributes").unwrap();
+    for (name, _) in &files {
+        lfs_repo.add(name).expect("LFS add failed");
+    }
+    lfs_repo.commit("add multiple files").unwrap();
+
+    // Push
+    let repo = lfs_repo.repo();
+    let mut remote = repo.find_remote("origin").unwrap();
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(|_url, _username, _allowed| {
+        Cred::userpass_plaintext("x-access-token", &token)
+    });
+    let mut push_options = PushOptions::new();
+    push_options.remote_callbacks(callbacks);
+    remote
+        .push(
+            &[&format!("refs/heads/{}:refs/heads/{}", branch, branch)],
+            Some(&mut push_options),
+        )
+        .expect("push failed");
+
+    println!("Pushed {} files via library", files.len());
+
+    // Fresh clone with CLI
+    let fresh = TempDir::new().unwrap();
+    let clone_result = Command::new("git")
+        .args([
+            "clone",
+            "--branch",
+            &branch,
+            &auth_url,
+            fresh.path().to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    if !clone_result.status.success() {
+        let mut callbacks = RemoteCallbacks::new();
+        callbacks.credentials(|_url, _username, _allowed| {
+            Cred::userpass_plaintext("x-access-token", &token)
+        });
+        let mut push_options = PushOptions::new();
+        push_options.remote_callbacks(callbacks);
+        let _ = remote.push(&[&format!(":refs/heads/{}", branch)], Some(&mut push_options));
+        panic!("Clone failed");
+    }
+
+    // Verify all files
+    for (name, expected) in &files {
+        let downloaded = fs::read(fresh.path().join(name)).unwrap();
+        assert_eq!(&downloaded, expected, "Content mismatch for {}", name);
+        println!("  {} - content verified!", name);
+    }
+
+    // Cleanup
+    let mut callbacks = RemoteCallbacks::new();
+    callbacks.credentials(|_url, _username, _allowed| {
+        Cred::userpass_plaintext("x-access-token", &token)
+    });
+    let mut push_options = PushOptions::new();
+    push_options.remote_callbacks(callbacks);
+    let _ = remote.push(&[&format!(":refs/heads/{}", branch)], Some(&mut push_options));
+
+    println!("\n=== SUCCESS ===");
+    println!("- Multiple file pointers match CLI exactly");
+    println!("- Library batch upload works for multiple files");
+    println!("- CLI can download all files we uploaded");
+}
+
 /// Test streaming upload and download.
 #[test]
 fn test_streaming_upload_download() {

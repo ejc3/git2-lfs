@@ -38,9 +38,12 @@ cargo test --features git2-integration --test e2e -- --nocapture  # E2E with out
 
 ## Test Strategy
 
-- **e2e.rs** - Comprehensive integration tests:
-  - `test_cli_vs_library` - Pointer format matches CLI exactly
+- **e2e.rs** - Comprehensive integration tests (9 tests):
+  - `test_cli_vs_library` - Pointer format matches CLI exactly, full roundtrip
   - `test_library_download_vs_cli` - CLI upload -> library download
+  - `test_cache_layout_matches_cli` - Cache path matches CLI exactly
+  - `test_large_file_roundtrip_vs_cli` - 1MB file streaming + CLI interop
+  - `test_multi_file_commit_vs_cli` - Multiple files in one commit
   - `test_cache_hit` - Local cache storage and retrieval
   - `test_batch_upload` - Multiple files in single batch
   - `test_batch_download` - Batch download verification
