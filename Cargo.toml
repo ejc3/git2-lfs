@@ -30,8 +30,8 @@ base64 = "0.22"
 # Error handling
 thiserror = "1.0"
 
-# Optional git2 integration
-git2 = { path = "../git2-rs", optional = true }
+# Optional git2 integration (using forked version with filter API support)
+git2 = { git = "https://github.com/ejc3/git2-rs.git", branch = "master", optional = true }
 
 [dev-dependencies]
 tempfile = "3.1"
