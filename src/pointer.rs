@@ -3,6 +3,8 @@
 //! LFS pointer files are small text files that replace large files in the Git repository.
 //! They contain metadata about the actual file stored in LFS.
 
+use std::io::Read;
+
 use crate::{Error, Oid, Result};
 
 /// LFS specification version.
@@ -34,6 +36,15 @@ impl Pointer {
             oid: Oid::from_content(content),
             size: content.len() as u64,
         }
+    }
+
+    /// Create a pointer by streaming content from a reader.
+    ///
+    /// This computes the SHA256 hash while reading, avoiding loading
+    /// the entire content into memory at once.
+    pub fn from_reader<R: Read>(reader: R) -> std::io::Result<Self> {
+        let (oid, size) = Oid::from_reader(reader)?;
+        Ok(Pointer { oid, size })
     }
 
     /// Parse a pointer from its text representation.

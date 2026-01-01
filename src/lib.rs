@@ -45,7 +45,7 @@ pub use batch::{Action, BatchObject, BatchRequest, BatchRequestObject, BatchResp
 pub use cache::{CacheWriter, ObjectCache};
 pub use client::LfsClient;
 pub use error::{Error, Result};
-pub use oid::Oid;
+pub use oid::{HashingWriter, Oid};
 pub use pointer::Pointer;
 
 #[cfg(feature = "git2-integration")]

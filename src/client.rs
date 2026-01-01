@@ -1,10 +1,13 @@
 //! LFS HTTP client for upload/download operations.
 
-use std::io::Read;
+use std::fs::File;
+use std::io::{self, Read, Write};
+use std::path::Path;
 use std::sync::Arc;
 use url::Url;
 
 use crate::batch::{BatchRequest, BatchRequestObject, BatchResponse};
+use crate::oid::HashingWriter;
 use crate::{Error, Pointer, Result};
 
 /// LFS client for communicating with an LFS server.
@@ -277,6 +280,233 @@ impl LfsClient {
         }
 
         Ok(content)
+    }
+
+    /// Download content to a file, streaming and verifying hash.
+    ///
+    /// This is more memory-efficient than `download()` for large files.
+    /// Streams directly to a temp file while hashing, then renames atomically.
+    pub fn download_to_file<P: AsRef<Path>>(&self, pointer: &Pointer, dest: P) -> Result<()> {
+        let dest = dest.as_ref();
+
+        // Request download URL
+        let mut batch_req = BatchRequest::download(vec![BatchRequestObject::new(
+            &pointer.oid().to_hex(),
+            pointer.size(),
+        )]);
+        if let Some(ref_name) = &self.inner.ref_name {
+            batch_req = batch_req.with_ref(ref_name);
+        }
+
+        let batch_resp = self.batch(&batch_req)?;
+
+        if batch_resp.objects.is_empty() {
+            return Err(Error::NotFound(pointer.oid().to_hex()));
+        }
+
+        let obj = &batch_resp.objects[0];
+
+        if let Some(err) = &obj.error {
+            return Err(Error::ServerError {
+                code: err.code,
+                message: err.message.clone(),
+            });
+        }
+
+        let action = obj
+            .download_action()
+            .ok_or_else(|| Error::NotFound(pointer.oid().to_hex()))?;
+
+        // Download the content
+        let mut req = self.inner.agent.get(&action.href);
+        for (key, value) in &action.header {
+            req = req.set(key, value);
+        }
+
+        let response = req.call()?;
+
+        // Stream to temp file while hashing
+        let temp_path = dest.with_extension("tmp");
+        let temp_file = File::create(&temp_path).map_err(Error::Io)?;
+        let mut hashing_writer = HashingWriter::new(temp_file);
+
+        io::copy(&mut response.into_reader(), &mut hashing_writer).map_err(Error::Io)?;
+
+        let (computed_oid, size, file) = hashing_writer.finish();
+        drop(file); // Close before rename
+
+        // Verify hash and size
+        if &computed_oid != pointer.oid() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(Error::InvalidPointer(
+                "downloaded content hash mismatch".into(),
+            ));
+        }
+        if size != pointer.size() {
+            let _ = std::fs::remove_file(&temp_path);
+            return Err(Error::InvalidPointer(
+                "downloaded content size mismatch".into(),
+            ));
+        }
+
+        // Atomic rename
+        std::fs::rename(&temp_path, dest).map_err(Error::Io)?;
+
+        Ok(())
+    }
+
+    /// Download content to a writer, streaming and verifying hash.
+    ///
+    /// Returns the number of bytes written.
+    pub fn download_to_writer<W: Write>(
+        &self,
+        pointer: &Pointer,
+        writer: W,
+    ) -> Result<u64> {
+        // Request download URL
+        let mut batch_req = BatchRequest::download(vec![BatchRequestObject::new(
+            &pointer.oid().to_hex(),
+            pointer.size(),
+        )]);
+        if let Some(ref_name) = &self.inner.ref_name {
+            batch_req = batch_req.with_ref(ref_name);
+        }
+
+        let batch_resp = self.batch(&batch_req)?;
+
+        if batch_resp.objects.is_empty() {
+            return Err(Error::NotFound(pointer.oid().to_hex()));
+        }
+
+        let obj = &batch_resp.objects[0];
+
+        if let Some(err) = &obj.error {
+            return Err(Error::ServerError {
+                code: err.code,
+                message: err.message.clone(),
+            });
+        }
+
+        let action = obj
+            .download_action()
+            .ok_or_else(|| Error::NotFound(pointer.oid().to_hex()))?;
+
+        let mut req = self.inner.agent.get(&action.href);
+        for (key, value) in &action.header {
+            req = req.set(key, value);
+        }
+
+        let response = req.call()?;
+
+        // Stream to writer while hashing
+        let mut hashing_writer = HashingWriter::new(writer);
+        io::copy(&mut response.into_reader(), &mut hashing_writer).map_err(Error::Io)?;
+
+        let (computed_oid, size, _) = hashing_writer.finish();
+
+        // Verify hash
+        if &computed_oid != pointer.oid() {
+            return Err(Error::InvalidPointer(
+                "downloaded content hash mismatch".into(),
+            ));
+        }
+        if size != pointer.size() {
+            return Err(Error::InvalidPointer(
+                "downloaded content size mismatch".into(),
+            ));
+        }
+
+        Ok(size)
+    }
+
+    /// Upload content from a file, streaming.
+    ///
+    /// Computes the hash while reading the file, then uploads.
+    /// Returns the pointer for the uploaded content.
+    pub fn upload_file<P: AsRef<Path>>(&self, path: P) -> Result<Pointer> {
+        let path = path.as_ref();
+
+        // Compute hash by streaming through file
+        let file = File::open(path).map_err(Error::Io)?;
+        let pointer = Pointer::from_reader(file).map_err(Error::Io)?;
+
+        // Now upload - we need to read the file again
+        let file = File::open(path).map_err(Error::Io)?;
+        self.upload_reader(&pointer, file, pointer.size())?;
+
+        Ok(pointer)
+    }
+
+    /// Upload content from a reader.
+    ///
+    /// The pointer must match the content that will be read.
+    /// The size must be known in advance for Content-Length header.
+    pub fn upload_reader<R: Read>(
+        &self,
+        pointer: &Pointer,
+        reader: R,
+        size: u64,
+    ) -> Result<()> {
+        // Request upload URL
+        let mut batch_req = BatchRequest::upload(vec![BatchRequestObject::new(
+            &pointer.oid().to_hex(),
+            pointer.size(),
+        )]);
+        if let Some(ref_name) = &self.inner.ref_name {
+            batch_req = batch_req.with_ref(ref_name);
+        }
+
+        let batch_resp = self.batch(&batch_req)?;
+
+        if batch_resp.objects.is_empty() {
+            return Err(Error::ServerError {
+                code: 500,
+                message: "no objects in batch response".into(),
+            });
+        }
+
+        let obj = &batch_resp.objects[0];
+
+        if let Some(err) = &obj.error {
+            return Err(Error::ServerError {
+                code: err.code,
+                message: err.message.clone(),
+            });
+        }
+
+        // Get upload action (no action means already exists)
+        let action = match obj.upload_action() {
+            Some(a) => a,
+            None => return Ok(()), // Already exists
+        };
+
+        // Upload the content
+        let mut req = self.inner.agent.put(&action.href);
+        for (key, value) in &action.header {
+            req = req.set(key, value);
+        }
+        req = req.set("Content-Type", "application/octet-stream");
+        req = req.set("Content-Length", &size.to_string());
+
+        // Send with reader
+        req.send(reader)?;
+
+        // Verify if required
+        if let Some(verify_action) = obj.verify_action() {
+            let verify_body = serde_json::json!({
+                "oid": pointer.oid().to_hex(),
+                "size": pointer.size()
+            });
+
+            let mut req = self.inner.agent.post(&verify_action.href);
+            for (key, value) in &verify_action.header {
+                req = req.set(key, value);
+            }
+            req = req.set("Content-Type", "application/vnd.git-lfs+json");
+            req.send_json(&verify_body)?;
+        }
+
+        Ok(())
     }
 
     /// Check if objects exist on the server.

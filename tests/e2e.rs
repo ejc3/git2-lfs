@@ -491,3 +491,68 @@ fn test_batch_download() {
     println!("- Batch download retrieves all files");
     println!("- Content integrity verified for all files");
 }
+
+/// Test streaming upload and download.
+#[test]
+fn test_streaming_upload_download() {
+    let token = match gh_token() {
+        Some(t) => t,
+        None => {
+            eprintln!("Skipping: gh not authenticated");
+            return;
+        }
+    };
+
+    println!("=== Testing Streaming Upload/Download ===\n");
+
+    // Create a temp file with unique content
+    let content = format!("Streaming test content {}\n", uuid::Uuid::new_v4());
+    let content_bytes = content.as_bytes();
+
+    let temp_dir = TempDir::new().unwrap();
+    let upload_path = temp_dir.path().join("upload.bin");
+    let download_path = temp_dir.path().join("download.bin");
+
+    fs::write(&upload_path, content_bytes).unwrap();
+    println!("Created temp file: {} bytes", content_bytes.len());
+
+    // Streaming upload
+    let client = LfsClient::new("https://github.com/ejc3/git2-lfs.git")
+        .unwrap()
+        .with_token(&token);
+
+    println!("Uploading via streaming...");
+    let pointer = client.upload_file(&upload_path).expect("streaming upload failed");
+    println!("Upload complete! OID: {}", pointer.oid().to_hex());
+
+    // Verify pointer matches expected
+    let expected_pointer = Pointer::from_content(content_bytes);
+    assert_eq!(pointer.oid(), expected_pointer.oid(), "OID should match");
+    assert_eq!(pointer.size(), expected_pointer.size(), "Size should match");
+
+    // Streaming download to file
+    println!("Downloading via streaming to file...");
+    client
+        .download_to_file(&pointer, &download_path)
+        .expect("streaming download failed");
+
+    // Verify content
+    let downloaded = fs::read(&download_path).unwrap();
+    assert_eq!(downloaded, content_bytes, "Downloaded content should match");
+    println!("Download verified!");
+
+    // Also test download_to_writer
+    println!("Testing download_to_writer...");
+    let mut buffer = Vec::new();
+    let written = client
+        .download_to_writer(&pointer, &mut buffer)
+        .expect("download_to_writer failed");
+    assert_eq!(written, content_bytes.len() as u64);
+    assert_eq!(buffer, content_bytes);
+    println!("download_to_writer verified!");
+
+    println!("\n=== SUCCESS ===");
+    println!("- upload_file streams content and computes hash");
+    println!("- download_to_file streams to temp file with verification");
+    println!("- download_to_writer streams to any writer");
+}

@@ -25,6 +25,8 @@ Pure Rust Git LFS implementation for use with git2.
 - **Local caching** - Objects cached at `.git/lfs/objects/<oid[0:2]>/<oid[2:4]>/<oid>`
 - **Ref field support** - Optional ref name in batch requests for access control
 - **Automatic LFS** - `LfsRepo.add()` handles upload + pointer generation
+- **Streaming** - `upload_file()`, `download_to_file()` for memory-efficient large file handling
+- **HashingWriter** - Stream data while computing SHA256 hash
 
 ## Testing
 
@@ -36,7 +38,13 @@ cargo test --features git2-integration --test e2e -- --nocapture  # E2E with out
 
 ## Test Strategy
 
-- **e2e.rs** - Ultimate integration proof (git2 + LfsRepo + GitHub)
+- **e2e.rs** - Comprehensive integration tests:
+  - `test_cli_vs_library` - Pointer format matches CLI exactly
+  - `test_library_download_vs_cli` - CLI upload -> library download
+  - `test_cache_hit` - Local cache storage and retrieval
+  - `test_batch_upload` - Multiple files in single batch
+  - `test_batch_download` - Batch download verification
+  - `test_streaming_upload_download` - Streaming file I/O
 - **protocol_verification.rs** - External validation (matches git-lfs CLI, openssl SHA256)
 - **integration.rs** - HTTP mock tests, edge cases
 - Unit tests in each module for implementation details
