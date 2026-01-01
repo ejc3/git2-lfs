@@ -110,7 +110,7 @@ impl LfsRepo {
 
         // Read content from disk
         let content = fs::read(&full_path)
-            .map_err(|e| crate::Error::Io(e))?;
+            .map_err(crate::Error::Io)?;
 
         // Apply clean filter (handles LFS upload if tracked)
         let cleaned = self.filter.clean(&path_str, &content)?;
@@ -118,7 +118,7 @@ impl LfsRepo {
         // If content was transformed (is a pointer), write it back
         if cleaned != content {
             fs::write(&full_path, &cleaned)
-                .map_err(|e| crate::Error::Io(e))?;
+                .map_err(crate::Error::Io)?;
         }
 
         // Add to index
@@ -158,14 +158,14 @@ impl LfsRepo {
 
             if full_path.exists() {
                 let content = fs::read(&full_path)
-                    .map_err(|e| crate::Error::Io(e))?;
+                    .map_err(crate::Error::Io)?;
 
                 // Check if it's a pointer
                 if Pointer::is_pointer(&content) {
                     // Smudge (download from LFS)
                     let smudged = self.filter.smudge(&path_str, &content)?;
                     fs::write(&full_path, &smudged)
-                        .map_err(|e| crate::Error::Io(e))?;
+                        .map_err(crate::Error::Io)?;
                 }
             }
         }
@@ -183,12 +183,12 @@ impl LfsRepo {
         let full_path = workdir.join(path);
 
         let content = fs::read(&full_path)
-            .map_err(|e| crate::Error::Io(e))?;
+            .map_err(crate::Error::Io)?;
 
         if Pointer::is_pointer(&content) {
             let smudged = self.filter.smudge(&path_str, &content)?;
             fs::write(&full_path, &smudged)
-                .map_err(|e| crate::Error::Io(e))?;
+                .map_err(crate::Error::Io)?;
         }
 
         Ok(())
