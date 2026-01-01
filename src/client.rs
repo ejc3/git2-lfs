@@ -1,13 +1,22 @@
 //! LFS HTTP client for upload/download operations.
 
 use std::io::Read;
+use std::sync::Arc;
 use url::Url;
 
 use crate::batch::{BatchRequest, BatchRequestObject, BatchResponse};
 use crate::{Error, Pointer, Result};
 
 /// LFS client for communicating with an LFS server.
+///
+/// This type is cheaply cloneable - multiple clones share the same underlying
+/// HTTP agent and configuration.
+#[derive(Clone)]
 pub struct LfsClient {
+    inner: Arc<LfsClientInner>,
+}
+
+struct LfsClientInner {
     /// The LFS API endpoint URL.
     lfs_url: Url,
     /// Optional authentication (username, password).
@@ -24,25 +33,34 @@ impl LfsClient {
     pub fn new(repo_url: &str) -> Result<Self> {
         let lfs_url = derive_lfs_url(repo_url)?;
         Ok(LfsClient {
-            lfs_url,
-            auth: None,
-            agent: ureq::Agent::new(),
+            inner: Arc::new(LfsClientInner {
+                lfs_url,
+                auth: None,
+                agent: ureq::Agent::new(),
+            }),
         })
     }
 
     /// Create a new LFS client with a specific LFS endpoint URL.
     pub fn with_url(lfs_url: Url) -> Self {
         LfsClient {
-            lfs_url,
-            auth: None,
-            agent: ureq::Agent::new(),
+            inner: Arc::new(LfsClientInner {
+                lfs_url,
+                auth: None,
+                agent: ureq::Agent::new(),
+            }),
         }
     }
 
     /// Set basic authentication credentials.
-    pub fn with_auth(mut self, username: &str, password: &str) -> Self {
-        self.auth = Some((username.to_string(), password.to_string()));
-        self
+    pub fn with_auth(self, username: &str, password: &str) -> Self {
+        LfsClient {
+            inner: Arc::new(LfsClientInner {
+                lfs_url: self.inner.lfs_url.clone(),
+                auth: Some((username.to_string(), password.to_string())),
+                agent: ureq::Agent::new(),
+            }),
+        }
     }
 
     /// Set authentication from a token (uses token as password with empty username).
@@ -52,19 +70,19 @@ impl LfsClient {
 
     /// Get the LFS endpoint URL.
     pub fn lfs_url(&self) -> &Url {
-        &self.lfs_url
+        &self.inner.lfs_url
     }
 
     /// Send a batch request to the LFS server.
     pub fn batch(&self, request: &BatchRequest) -> Result<BatchResponse> {
-        let url = self.lfs_url.join("objects/batch")?;
+        let url = self.inner.lfs_url.join("objects/batch")?;
 
-        let mut req = self.agent
+        let mut req = self.inner.agent
             .post(url.as_str())
             .set("Accept", "application/vnd.git-lfs+json")
             .set("Content-Type", "application/vnd.git-lfs+json");
 
-        if let Some((username, password)) = &self.auth {
+        if let Some((username, password)) = &self.inner.auth {
             let credentials = format!("{}:{}", username, password);
             let encoded = base64::Engine::encode(
                 &base64::engine::general_purpose::STANDARD,
@@ -128,7 +146,7 @@ impl LfsClient {
         };
 
         // Upload the content
-        let mut req = self.agent.put(&action.href);
+        let mut req = self.inner.agent.put(&action.href);
 
         // Add headers from action
         for (key, value) in &action.header {
@@ -147,7 +165,7 @@ impl LfsClient {
                 "size": pointer.size()
             });
 
-            let mut req = self.agent.post(&verify_action.href);
+            let mut req = self.inner.agent.post(&verify_action.href);
             for (key, value) in &verify_action.header {
                 req = req.set(key, value);
             }
@@ -188,7 +206,7 @@ impl LfsClient {
         })?;
 
         // Download the content
-        let mut req = self.agent.get(&action.href);
+        let mut req = self.inner.agent.get(&action.href);
 
         // Add headers from action
         for (key, value) in &action.header {
@@ -299,6 +317,18 @@ mod tests {
         let client = LfsClient::new("https://github.com/owner/repo.git")
             .unwrap()
             .with_auth("user", "pass");
-        assert!(client.auth.is_some());
+        assert!(client.inner.auth.is_some());
+    }
+
+    #[test]
+    fn test_client_clone() {
+        let client1 = LfsClient::new("https://github.com/owner/repo.git").unwrap();
+        let client2 = client1.clone();
+
+        // Both should point to the same URL
+        assert_eq!(client1.lfs_url(), client2.lfs_url());
+
+        // Arc should be shared
+        assert!(Arc::ptr_eq(&client1.inner, &client2.inner));
     }
 }
